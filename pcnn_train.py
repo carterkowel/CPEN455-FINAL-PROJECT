@@ -22,21 +22,36 @@ def train_or_test(model, data_loader, optimizer, loss_op, device, args, epoch, m
         
     deno =  args.batch_size * np.prod(args.obs) * np.log(2.)        
     loss_tracker = mean_tracker()
+    val_accuracy_tracker = mean_tracker()
     
-    for batch_idx, item in enumerate(tqdm(data_loader)):
-        model_input, _ = item
+    for _, item in enumerate(tqdm(data_loader)):
+        model_input, label = item
         model_input = model_input.to(device)
-        model_output = model(model_input)
+
+        # Check if the model is in training mode or test mode
+        if mode == 'test':
+            losses, label_preds = model.infer_img(model_input, device)
+            loss_tracker.update(torch.sum(losses).item()/deno)
+        else:
+            labels = torch.tensor([my_bidict[item] for item in labels])
+            labels = labels.to(device)
+
+        model_output = model(model_input, labels)
         loss = loss_op(model_input, model_output)
         loss_tracker.update(loss.item()/deno)
         if mode == 'training':
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-        
+        else:
+             _, label_preds = model.infer_img(model_input, device)
+             val_accuracy_tracker.update(torch.sum(label_preds == labels).item()/args.batch_size)
+
     if args.en_wandb:
         wandb.log({mode + "-Average-BPD" : loss_tracker.get_mean()})
         wandb.log({mode + "-epoch": epoch})
+        if mode == 'val':
+                wandb.log({"val-Accuracy": val_accuracy_tracker.get_mean()})
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -119,7 +134,8 @@ if __name__ == '__main__':
 
     #set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    kwargs = {'num_workers':1, 'pin_memory':True, 'drop_last':True}
+    kwargs = {'num_workers':0, 'pin_memory':True, 'drop_last':True}
+    print('Using device:', device)
 
     # set data
     if "mnist" in args.dataset:
@@ -177,8 +193,10 @@ if __name__ == '__main__':
     loss_op   = lambda real, fake : discretized_mix_logistic_loss(real, fake)
     sample_op = lambda x : sample_from_discretized_mix_logistic(x, args.nr_logistic_mix)
 
+    num_classes = len(my_bidict)
+
     model = PixelCNN(nr_resnet=args.nr_resnet, nr_filters=args.nr_filters, 
-                input_channels=input_channels, nr_logistic_mix=args.nr_logistic_mix)
+                input_channels=input_channels, nr_logistic_mix=args.nr_logistic_mix, num_classes=num_classes)
     model = model.to(device)
 
     if args.load_params:
@@ -220,7 +238,8 @@ if __name__ == '__main__':
         
         if epoch % args.sampling_interval == 0:
             print('......sampling......')
-            sample_t = sample(model, args.sample_batch_size, args.obs, sample_op)
+            labels = torch.randint(0, num_classes, (args.sample_batch_size,)).to(next(model.parameters()).device)
+            sample_t = sample(model, args.sample_batch_size, args.obs, sample_op, labels=labels)
             sample_t = rescaling_inv(sample_t)
             save_images(sample_t, args.sample_dir)
             sample_result = wandb.Image(sample_t, caption="epoch {}".format(epoch))
