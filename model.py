@@ -52,14 +52,14 @@ class PixelCNNLayer_down(nn.Module):
 
 class PixelCNN(nn.Module):
     def __init__(self, nr_resnet=5, nr_filters=80, nr_logistic_mix=10,
-                    resnet_nonlinearity='concat_elu', input_channels=3, num_of_classes=4):
+                    resnet_nonlinearity='concat_elu', input_channels=3, num_classes=4):
         super(PixelCNN, self).__init__()
         if resnet_nonlinearity == 'concat_elu' :
             self.resnet_nonlinearity = lambda x : concat_elu(x)
         else :
             raise Exception('right now only concat elu is supported as resnet nonlinearity.')
 
-        self.num_of_classes = num_of_classes
+        self.num_classes = num_classes
         self.nr_filters = nr_filters
         self.input_channels = input_channels
         self.nr_logistic_mix = nr_logistic_mix
@@ -98,7 +98,7 @@ class PixelCNN(nn.Module):
         self.init_padding = None
 
         # Adding embedding layer
-        self.embedding = nn.Embedding(num_of_classes, input_channels * 32 * 32)
+        self.embedding = nn.Embedding(num_classes, input_channels * 32 * 32)
 
     # Add the embeddings to the input
     def addPosEmb(self, x, labels, height, width):
@@ -155,21 +155,23 @@ class PixelCNN(nn.Module):
 
         return x_out
     
-    # Model inference
-    def infer_img(self, x, device):
+    # Model inference (get loss and labels)
+    def infer_image(self, x, device):
         B, _, _, _ = x.size()
         inferred_loss = torch.zeros((self.num_classes, B)).to(device)
 
-        # Get the loss for each class
+        # Get the loss for each of the 4 classes
         for i in range(self.num_classes):
-            # Run the model with each inferred label to get the loss
+
+            # Runs the model with each inferred label to get the loss
             inferred_label = (torch.ones(B, dtype=torch.int64) * i).to(device)
             model_output = self(x, inferred_label)
             inferred_loss[i] = discretized_mix_logistic_loss(x, model_output, True)
 
-        losses, labels = torch.min(inferred_loss, dim=0)
-        return losses, labels
-    
+        min_losses, min_labels = torch.min(inferred_loss, dim=0)
+
+        return min_losses, min_labels, inferred_loss
+        
 class random_classifier(nn.Module):
     def __init__(self, NUM_CLASSES):
         super(random_classifier, self).__init__()
@@ -182,5 +184,3 @@ class random_classifier(nn.Module):
         torch.save(self.state_dict(), 'models/conditional_pixelcnn.pth')
     def forward(self, x, device):
         return torch.randint(0, self.NUM_CLASSES, (x.shape[0],)).to(device)
-    
-    
